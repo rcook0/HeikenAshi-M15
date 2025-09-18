@@ -1,5 +1,13 @@
 # Heikin Ashi Overlay Strategy (Backtrader + Sample Generator + VectorBT)
 
+## Sample Data Generator → creates synthetic OHLCV CSVs for quick testing.
+
+##   python ha_overlay_backtrader.py --gen --csv sample_data.csv --symbol XAUUSD
+
+## VectorBT Module → run the same HA Overlay logic in vectorbt for fast backtesting and visualization.
+
+##   python ha_overlay_backtrader.py --csv sample_data.csv --vectorbt
+
 import argparse
 import datetime as dt
 import math
