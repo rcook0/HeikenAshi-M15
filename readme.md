@@ -1,4 +1,4 @@
-# M15 Heikin Ashi Overlay Strategy — Enhanced v1.6
+# M15 Heikin Ashi Strategy — Enhanced v1.6
 
 ## Overview
 This is a fully self-configuring M15 Heikin Ashi overlay strategy designed for TradingView. It combines HA smoothing, EMA trend, VWAP, volume filtering, Stochastic oscillator, and dynamic ATR-based trade management to generate high-probability signals with optional manual override.
@@ -7,7 +7,7 @@ The strategy includes automated session detection, symbol-based default volatili
 
 ## Features
 
-- **Heikin Ashi Overlay:** Smooth HA candles with adjustable sensitivity.
+- **Heikin Ashi:** Smooth HA candles with adjustable sensitivity.
 - **EMA Trend Filter:** Fast (21) and slow (200) EMA trend confirmation.
 - **VWAP Confluence:** Trades align with VWAP slope for trend confirmation.
 - **Volume Filter:** Optional filter to only take trades when volume is above its moving average.
