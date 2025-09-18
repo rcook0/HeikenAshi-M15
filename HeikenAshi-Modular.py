@@ -1,12 +1,14 @@
 # Heikin Ashi Overlay Strategy (Backtrader + Sample Generator + VectorBT)
 
-## Sample Data Generator → creates synthetic OHLCV CSVs for quick testing.
+## python ha_overlay_backtrader.py --csv sample.csv
 
-##   python ha_overlay_backtrader.py --gen --csv sample_data.csv --symbol XAUUSD
+## Sample Data Generator → creates synthetic OHLCV CSVs for quick testing.
+##   python ha_overlay_backtrader.py --gen --csv sample.csv --symbol XAUUSD
 
 ## VectorBT Module → run the same HA Overlay logic in vectorbt for fast backtesting and visualization.
+##   python ha_overlay_backtrader.py --csv sample.csv --vectorbt
 
-##   python ha_overlay_backtrader.py --csv sample_data.csv --vectorbt
+# Heikin Ashi Strategy (Backtrader + VectorBT) — Pure HA Only
 
 import argparse
 import datetime as dt
@@ -14,14 +16,15 @@ import math
 import backtrader as bt
 import pandas as pd
 import numpy as np
+import vectorbt as vbt
 
 # ─────────────────────────────────────────────
 # Sample OHLCV Data Generator
 # ─────────────────────────────────────────────
 def generate_sample_csv(path: str = "sample_data.csv", n=1000, symbol="XAUUSD"):
-    """Generate synthetic OHLCV data for testing."""
     dates = pd.date_range("2024-01-01", periods=n, freq="15T")
-    prices = np.cumsum(np.random.randn(n)) + 2000 if "XAU" in symbol else np.cumsum(np.random.randn(n)) + 30000
+    base = 2000 if "XAU" in symbol else 30000
+    prices = np.cumsum(np.random.randn(n)) + base
     df = pd.DataFrame({
         "datetime": dates,
         "open": prices + np.random.randn(n),
@@ -35,21 +38,30 @@ def generate_sample_csv(path: str = "sample_data.csv", n=1000, symbol="XAUUSD"):
     return path
 
 # ─────────────────────────────────────────────
-# Backtrader Components (same as previous)
+# Backtrader: Heikin Ashi Only Indicator
 # ─────────────────────────────────────────────
-class HeikinAshiSmooth(bt.Indicator):
+class HeikinAshi(bt.Indicator):
     lines = ('ha_open', 'ha_high', 'ha_low', 'ha_close')
     params = dict(smooth_len=3)
     def __init__(self):
         ha_close_raw = (self.data.open + self.data.high + self.data.low + self.data.close) / 4.0
-        self.ha_close_smooth = bt.ind.EMA(ha_close_raw, period=max(1, int(self.p.smooth_len)))
-        self.l.ha_close = self.ha_close_smooth
+        self.l.ha_close = bt.ind.EMA(ha_close_raw, period=max(1, int(self.p.smooth_len)))
         self.l.ha_open = (self.data.open + self.data.close) / 2.0
         self.l.ha_high = bt.Max(self.data.high, bt.Max(self.l.ha_open, self.l.ha_close))
         self.l.ha_low = bt.Min(self.data.low, bt.Min(self.l.ha_open, self.l.ha_close))
 
-# (Omitting strategy code here for brevity — unchanged from v1.0 above)
-# Assume HAOverlayStrategy and RiskSizer classes already defined...
+class HAOnlyStrategy(bt.Strategy):
+    params = dict(ema_fast=21, ema_slow=200, atr_len=14)
+    def __init__(self):
+        self.ha = HeikinAshi(self.data)
+        self.ema_fast = bt.ind.EMA(self.ha.ha_close, period=self.p.ema_fast)
+        self.ema_slow = bt.ind.EMA(self.ha.ha_close, period=self.p.ema_slow)
+        self.atr = bt.ind.ATR(self.data, period=self.p.atr_len)
+    def next(self):
+        if not self.position and self.ha.ha_close[0] > self.ema_fast[0] > self.ema_slow[0]:
+            self.buy()
+        elif self.position and self.ha.ha_close[0] < self.ema_fast[0]:
+            self.close()
 
 class GenericCSV(bt.feeds.GenericCSVData):
     params = (
@@ -60,66 +72,21 @@ class GenericCSV(bt.feeds.GenericCSVData):
     )
 
 # ─────────────────────────────────────────────
-# VectorBT Modular Implementation
+# VectorBT: HA Only Strategy
 # ─────────────────────────────────────────────
-import vectorbt as vbt
-
-def ha_overlay_vectorbt(df: pd.DataFrame,
-                        ema_fast=21, ema_slow=200,
-                        atr_len=14, atr_stop=1.0, atr_target=2.0,
-                        accuracy=0.7, ha_smooth=3,
-                        vol_ma=20, vol_filter=True):
-    """Run HA Overlay Strategy in vectorbt."""
-    # Heikin Ashi calc
-    ha_close_raw = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    ha_close = ha_close_raw.ewm(span=ha_smooth).mean()
-    ha_open = (df['open'] + df['close'])/2
+def ha_only_vectorbt(df: pd.DataFrame, ema_fast=21, ema_slow=200, atr_len=14):
+    ha_close_raw = (df['open'] + df['high'] + df['low'] + df['close'])/4
+    ha_close = ha_close_raw.ewm(span=3).mean()
+    ha_open = (df['open']+df['close'])/2
     ha_high = pd.concat([df['high'], ha_open, ha_close], axis=1).max(axis=1)
     ha_low = pd.concat([df['low'], ha_open, ha_close], axis=1).min(axis=1)
-
-    # EMA & VWAP
-    ema_fast = ha_close.ewm(span=ema_fast).mean()
-    ema_slow = ha_close.ewm(span=ema_slow).mean()
-    typical_price = (df['high']+df['low']+df['close'])/3
-    vwap = (typical_price*df['volume']).cumsum() / df['volume'].cumsum()
-    vwap_slope = vwap.diff()
-
-    # Volume filter
-    vol_ma_series = df['volume'].rolling(vol_ma).mean()
-    vol_ok = (df['volume'] > vol_ma_series) if vol_filter else True
-
-    # ATR
-    tr = pd.concat([(df['high']-df['low']),
-                    (df['high']-df['close'].shift()).abs(),
-                    (df['low']-df['close'].shift()).abs()], axis=1).max(axis=1)
+    emaF = ha_close.ewm(span=ema_fast).mean()
+    emaS = ha_close.ewm(span=ema_slow).mean()
+    tr = pd.concat([(df['high']-df['low']), (df['high']-df['close'].shift()).abs(), (df['low']-df['close'].shift()).abs()], axis=1).max(axis=1)
     atr = tr.rolling(atr_len).mean()
-
-    # Stochastic
-    low_k = df['low'].rolling(14).min()
-    high_k = df['high'].rolling(14).max()
-    k = (df['close']-low_k)/(high_k-low_k)*100
-    d = k.rolling(3).mean()
-    ob = 80 - (80-60)*(1-accuracy)
-    os = 20 + (40-20)*(1-accuracy)
-    stoch_cross_up = (k.shift(1)<d.shift(1)) & (k>d) & (k<os)
-    stoch_cross_dn = (k.shift(1)>d.shift(1)) & (k<d) & (k>ob)
-
-    # Long/short conds
-    bull = (ha_close>vwap) & (ema_fast>ema_slow) & (vwap_slope>0) & vol_ok
-    bear = (ha_close<vwap) & (ema_fast<ema_slow) & (vwap_slope<0) & vol_ok
-    long_entries = bull & stoch_cross_up
-    short_entries = bear & stoch_cross_dn
-
-    # Exits by ATR stops
-    long_exits = (df['close'] < ha_close - atr*atr_stop)
-    short_exits = (df['close'] > ha_close + atr*atr_stop)
-
-    pf = vbt.Portfolio.from_signals(df['close'],
-                                    entries=long_entries,
-                                    exits=long_exits,
-                                    short_entries=short_entries,
-                                    short_exits=short_exits,
-                                    size=0.1, fees=0.0002)
+    long_entries = (ha_close>emaF) & (emaF>emaS)
+    long_exits = (ha_close<emaF)
+    pf = vbt.Portfolio.from_signals(df['close'], entries=long_entries, exits=long_exits, size=0.1, fees=0.0002)
     return pf
 
 # ─────────────────────────────────────────────
@@ -127,7 +94,7 @@ def ha_overlay_vectorbt(df: pd.DataFrame,
 # ─────────────────────────────────────────────
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gen', action='store_true', help='Generate sample data')
+    parser.add_argument('--gen', action='store_true')
     parser.add_argument('--csv', default='sample_data.csv')
     parser.add_argument('--symbol', default='XAUUSD')
     parser.add_argument('--vectorbt', action='store_true')
@@ -138,15 +105,13 @@ if __name__ == '__main__':
 
     if args.vectorbt:
         df = pd.read_csv(args.csv, parse_dates=['datetime']).set_index('datetime')
-        pf = ha_overlay_vectorbt(df)
+        pf = ha_only_vectorbt(df)
         print(pf.stats())
         pf.plot().show()
     else:
-        # Backtrader path (simplified)
         cerebro = bt.Cerebro()
         data = GenericCSV(dataname=args.csv)
-        data._name = args.symbol
         cerebro.adddata(data)
-        cerebro.addstrategy(HAOverlayStrategy)
+        cerebro.addstrategy(HAOnlyStrategy)
         cerebro.run()
-        cerebro.plot()
+        cerebro.plot(style='candlestick')
