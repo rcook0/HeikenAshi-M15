@@ -1,7 +1,10 @@
 // @version=5
 // M15 Heikin Ashi Overlay Strategy — Fully self-configuring with automatic session detection and symbol-based default volatility factors
 
-strategy("M15 HA Overlay Strategy — Enhanced v1.6",
+// @version=5
+// M15 Heikin Ashi Strategy — Pure HA (no overlay of real candles)
+
+strategy("M15 Heikin Ashi Strategy — Pure v1.0",
      overlay=true,
      timeframe="15",
      initial_capital=10000,
@@ -15,49 +18,14 @@ strategy("M15 HA Overlay Strategy — Enhanced v1.6",
      default_qty_value=10)
 
 //───────────────────────────────
-// ⌥ Inputs — General
+// ⌥ Inputs
 //───────────────────────────────
-symChoice = input.string("Any", "Symbol filter", options=["Any", "Gold (XAU)", "Bitcoin (BTC)", "GBPJPY (GJ)"])
 accuracy = input.float(0.70, "Signal accuracy (0..1)", minval=0.30, maxval=1.00, step=0.05)
 relax    = 1.0 - accuracy
 riskPct  = input.float(10, "Position size % of equity", minval=0.1, maxval=100)
 
 //───────────────────────────────
-// ⌥ Automatic session detection
-//───────────────────────────────
-sessionEnable = input.bool(true, "Enable automatic session detection")
-var string sessTZ = syminfo.timezone
-var bool inSession = true
-if sessionEnable
-    h = hour(time, sessTZ)
-    m = minute(time, sessTZ)
-    inLondon = h >= 7 and h < 12
-    inNY     = h >= 13 and h < 17
-    inSession := inLondon or inNY
-
-//───────────────────────────────
-// ⌥ Adaptive ATR multiplier with symbol-based defaults and manual override
-//───────────────────────────────
-useManualATR = input.bool(false, "Manual ATR multiplier override")
-manualATRMult = input.float(1.0, "Manual ATR multiplier")
-atrLen = input.int(14, "ATR length")
-atrRaw = ta.atr(atrLen)
-volatilityFactor = input.float(1.0, "Volatility sensitivity")
-
-// Symbol-based default factors
-defaultATR = switch symChoice
-    "Gold (XAU)"    => 1.0
-    "Bitcoin (BTC)" => 1.5
-    "GBPJPY (GJ)"   => 0.8
-    => 1.0
-
-// Adaptive multiplier
-atrSMA = ta.sma(atrRaw, 50)
-atrAdaptive = atrSMA > 0 ? defaultATR + (atrRaw - atrSMA)/atrSMA * volatilityFactor : defaultATR
-atrMultFinal = useManualATR ? manualATRMult : atrAdaptive
-
-//───────────────────────────────
-// ⌥ Heikin Ashi, EMA, VWAP, Volume filter
+// ⌥ Heikin Ashi Calculation
 //───────────────────────────────
 haSmoothLen = input.int(3, "HA smoothing length")
 var float haCloseSmooth = na
@@ -67,25 +35,24 @@ haOpen  = na(haOpen[1]) ? (open + close)/2 : (haOpen[1] + haCloseSmooth[1])/2
 haHigh  = math.max(high, math.max(haOpen, haCloseSmooth))
 haLow   = math.min(low, math.min(haOpen, haCloseSmooth))
 
-lenEMAfast = input.int(21,  "EMA fast (M15)")
-lenEMAslow = input.int(200, "EMA slow (M15)")
+//───────────────────────────────
+// ⌥ Indicators
+//───────────────────────────────
+lenEMAfast = input.int(21,  "EMA fast")
+lenEMAslow = input.int(200, "EMA slow")
 emaFast = ta.ema(haCloseSmooth, lenEMAfast)
 emaSlow = ta.ema(haCloseSmooth, lenEMAslow)
 vwap    = ta.vwap(hlc3)
 vwapSlope = vwap - vwap[1]
 
-// Volume filter
 useVolumeFilter = input.bool(true, "Enable volume filter")
 volLen = input.int(20, "Volume MA length")
 volMA  = ta.sma(volume, volLen)
 volOK  = not useVolumeFilter or (volume > volMA)
 
-// Confluence zones
-bullConfluence = haCloseSmooth > emaSlow and vwapSlope > 0 and volOK
-bearConfluence = haCloseSmooth < emaSlow and vwapSlope < 0 and volOK
-bgcolor(bullConfluence ? color.new(color.green, 80) : bearConfluence ? color.new(color.red, 80) : na)
-
-// Stochastic
+//───────────────────────────────
+// ⌥ Stochastic
+//───────────────────────────────
 kLen   = input.int(14, "Stoch K length")
 dLen   = input.int(3,  "Stoch D length")
 smooth = input.int(3,  "Stoch smoothing")
@@ -95,7 +62,9 @@ osbase = 20.0, osMax = 40.0
 ob = obase - (obase - obMin) * relax
 os = osbase + (osMax - osbase) * relax
 
-// Entry logic with session check
+//───────────────────────────────
+// ⌥ Entry Logic
+//───────────────────────────────
 nearTolBase = 0.0, nearTolMax = 5.0
 nearTol = nearTolBase + (nearTolMax - nearTolBase) * relax
 stochCrossUp   = ta.crossover(k, d) and k < os + nearTol
@@ -104,15 +73,80 @@ stochCrossDown = ta.crossunder(k, d) and k > ob - nearTol
 bullStructure = haCloseSmooth > vwap and emaFast > emaSlow and vwapSlope > 0 and volOK
 bearStructure = haCloseSmooth < vwap and emaFast < emaSlow and vwapSlope < 0 and volOK
 
-longCond  = bullStructure and stochCrossUp and inSession
-shortCond = bearStructure and stochCrossDown and inSession
+longCond  = bullStructure and stochCrossUp
+shortCond = bearStructure and stochCrossDown
 
-// ATR-based SL/TP using final multiplier
+//───────────────────────────────
+// ⌥ ATR Management
+//───────────────────────────────
+atrLen = input.int(14, "ATR length")
+atr    = ta.atr(atrLen)
 atrPctSL = input.float(1.0, "%ATR for Stop")
 atrPctTP = input.float(2.0, "%ATR for Target")
-longSL  = haCloseSmooth - atrRaw * atrPctSL * atrMultFinal
-longTP  = haCloseSmooth + atrRaw * atrPctTP * atrMultFinal
-shortSL = haCloseSmooth + atrRaw * atrPctSL * atrMultFinal
-shortTP = haCloseSmooth - atrRaw * atrPctTP * atrMultFinal
+longSL  = haCloseSmooth - atr * atrPctSL
+longTP  = haCloseSmooth + atr * atrPctTP
+shortSL = haCloseSmooth + atr * atrPctSL
+shortTP = haCloseSmooth - atr * atrPctTP
 
-// Remaining break-even, trailing, orders, alerts, visuals use previous logic substituting atrMultFinal where needed
+useBE   = input.bool(true)
+beRR    = input.float(1.0, "Move to BE at R multiple")
+beOff   = input.float(0.1, "BE offset in ATR")
+useTrail= input.bool(true)
+trailATR= input.float(1.5, "ATR multiple for trail")
+var float longEntry = na
+var float shortEntry= na
+longRisk  = na(longEntry)  ? na : longEntry - longSL
+shortRisk = na(shortEntry) ? na : shortSL - shortEntry
+beLongPrice  = na(longEntry)  or na(longRisk)  ? na : longEntry + beOff * atr
+beShortPrice = na(shortEntry) or na(shortRisk) ? na : shortEntry - beOff * atr
+trailLong = haCloseSmooth - trailATR * atr
+trailShort= haCloseSmooth + trailATR * atr
+
+//───────────────────────────────
+// ⌥ Orders
+//───────────────────────────────
+if longCond and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long, qty_percent=riskPct)
+    longEntry := haCloseSmooth
+    shortEntry := na
+
+if shortCond and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short, qty_percent=riskPct)
+    shortEntry := haCloseSmooth
+    longEntry := na
+
+if strategy.position_size > 0
+    sl = longSL
+    tp = longTP
+    if useBE and not na(longEntry)
+        reachedBE = (high >= longEntry + beRR * (longEntry - longSL))
+        sl := reachedBE ? math.max(sl, beLongPrice) : sl
+    if useTrail
+        sl := math.max(sl, trailLong)
+    strategy.exit("Long-Exit", from_entry="Long", stop=sl, limit=tp)
+
+if strategy.position_size < 0
+    sl = shortSL
+    tp = shortTP
+    if useBE and not na(shortEntry)
+        reachedBE = (low <= shortEntry - beRR * (shortSL - shortEntry))
+        sl := reachedBE ? math.min(sl, beShortPrice) : sl
+    if useTrail
+        sl := math.min(sl, trailShort)
+    strategy.exit("Short-Exit", from_entry="Short", stop=sl, limit=tp)
+
+//───────────────────────────────
+// ⌥ Alerts
+//───────────────────────────────
+alertcondition(longCond,  title="Long Signal",  message="HA LONG on {{ticker}} @ {{close}}")
+alertcondition(shortCond, title="Short Signal", message="HA SHORT on {{ticker}} @ {{close}}")
+
+//───────────────────────────────
+// ⌥ Pure HA Plot
+//───────────────────────────────
+plot(emaFast, "EMA Fast (HA)")
+plot(emaSlow, "EMA Slow (HA)")
+plot(vwap,    "VWAP")
+plotcandle(haOpen, haHigh, haLow, haCloseSmooth, color=haCloseSmooth >= haOpen ? color.green : color.red, title="Heikin Ashi Candles")
+plotshape(longCond,  title="Long ▲",  style=shape.triangleup,   location=location.belowbar, size=size.tiny, text="L")
+plotshape(shortCond, title="Short ▼", style=shape.triangledown, location=location.abovebar, size=size.tiny, text="S")
